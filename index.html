@@ -137,6 +137,7 @@
 
   .piece {
     position: absolute;
+    z-index: 1;
     border-radius: 6px;
     cursor: grab;
     transition: left 0.18s ease, top 0.18s ease, transform 0.2s ease, box-shadow 0.2s ease;
@@ -200,6 +201,35 @@
 
   .piece.small {
     background: linear-gradient(145deg, #b47a44, #7f4d24);
+  }
+
+  /* Ghost outline showing where the big white square must end up */
+  #target-outline {
+    position: absolute;
+    border: 2px dashed rgba(240, 237, 224, 0.55);
+    border-radius: 6px;
+    background:
+      repeating-linear-gradient(
+        45deg,
+        rgba(244, 237, 224, 0.06) 0px,
+        rgba(244, 237, 224, 0.06) 6px,
+        transparent 6px,
+        transparent 12px
+      );
+    pointer-events: none;
+    z-index: 0;
+    box-shadow: inset 0 0 20px rgba(244, 237, 224, 0.12);
+  }
+
+  #target-outline::after {
+    content: 'GOAL';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    color: rgba(240, 237, 224, 0.35);
+    font-size: 0.75rem;
+    letter-spacing: 4px;
   }
 
   .piece.escaped {
@@ -301,7 +331,9 @@
 </div>
 
 <div id="frame">
-  <div id="board"></div>
+  <div id="board">
+    <div id="target-outline"></div>
+  </div>
   <div id="exit"></div>
 </div>
 
@@ -348,6 +380,7 @@
   ];
 
   const board = document.getElementById('board');
+  const targetOutline = document.getElementById('target-outline');
   const moveCountEl = document.getElementById('move-count');
   const timerEl = document.getElementById('timer');
   const resetBtn = document.getElementById('reset-btn');
@@ -356,6 +389,11 @@
   const winOverlay = document.getElementById('win-overlay');
   const winMovesEl = document.getElementById('win-moves');
   const winTimeEl = document.getElementById('win-time');
+
+  const SAVE_KEY = 'escape-game-state-v1';
+  // Target position for the big 2x2 white block (row=3, col=1)
+  const TARGET_ROW = 3;
+  const TARGET_COL = 1;
 
   let pieces = [];
   let grid = [];  // 2D array of pieceId or null
@@ -412,6 +450,64 @@
 
   function renderAll() {
     pieces.forEach(renderPiece);
+    renderTargetOutline();
+  }
+
+  function renderTargetOutline() {
+    const cell = getCellSize();
+    const gap = getGap();
+    targetOutline.style.width = (2 * cell + gap) + 'px';
+    targetOutline.style.height = (2 * cell + gap) + 'px';
+    targetOutline.style.left = (TARGET_COL * (cell + gap) + gap) + 'px';
+    targetOutline.style.top = (TARGET_ROW * (cell + gap) + gap) + 'px';
+  }
+
+  // ----- Persistence -----
+  function saveState() {
+    if (won) return;
+    try {
+      const payload = {
+        pieces: pieces.map(p => ({ id: p.id, cls: p.cls, r: p.r, c: p.c, h: p.h, w: p.w })),
+        moves,
+        elapsedMs: startTime ? (Date.now() - startTime) : 0,
+      };
+      localStorage.setItem(SAVE_KEY, JSON.stringify(payload));
+    } catch (_) { /* storage may be unavailable */ }
+  }
+
+  function loadState() {
+    try {
+      const raw = localStorage.getItem(SAVE_KEY);
+      if (!raw) return false;
+      const payload = JSON.parse(raw);
+      if (!payload || !Array.isArray(payload.pieces) || payload.pieces.length === 0) return false;
+      pieces = payload.pieces.map(p => ({ ...p }));
+      moves = payload.moves || 0;
+      moveCountEl.textContent = moves;
+      if (payload.elapsedMs && payload.elapsedMs > 0) {
+        startTime = Date.now() - payload.elapsedMs;
+        // Prime the timer display immediately
+        const elapsed = Math.floor(payload.elapsedMs / 1000);
+        const m = String(Math.floor(elapsed / 60)).padStart(2, '0');
+        const s = String(elapsed % 60).padStart(2, '0');
+        timerEl.textContent = `${m}:${s}`;
+        // Resume ticking
+        timerHandle = setInterval(() => {
+          const el = Math.floor((Date.now() - startTime) / 1000);
+          const mm = String(Math.floor(el / 60)).padStart(2, '0');
+          const ss = String(el % 60).padStart(2, '0');
+          timerEl.textContent = `${mm}:${ss}`;
+        }, 500);
+      }
+      buildGrid();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function clearSavedState() {
+    try { localStorage.removeItem(SAVE_KEY); } catch (_) {}
   }
 
   function canPlace(p, newR, newC, excludeId) {
@@ -458,6 +554,7 @@
       if (!startTime) startTimer();
       renderAll();
       checkWin();
+      saveState();
     }
     return moved;
   }
@@ -489,6 +586,7 @@
     if (big.r === 3 && big.c === 1) {
       won = true;
       stopTimer();
+      clearSavedState();
       animateEscape(big);
     }
   }
@@ -617,22 +715,42 @@
     selectedId = null;
     won = false;
     winOverlay.classList.remove('show');
-    // Remove all rendered pieces
     board.querySelectorAll('.piece').forEach(el => el.remove());
-    // Deep copy pieces
     pieces = INITIAL_PIECES.map(p => ({ ...p }));
     buildGrid();
     renderAll();
+    clearSavedState();
   }
 
-  resetBtn.addEventListener('click', reset);
+  function init() {
+    stopTimer();
+    startTime = null;
+    timerEl.textContent = '00:00';
+    moves = 0;
+    moveCountEl.textContent = '0';
+    selectedId = null;
+    won = false;
+    winOverlay.classList.remove('show');
+    board.querySelectorAll('.piece').forEach(el => el.remove());
+    pieces = INITIAL_PIECES.map(p => ({ ...p }));
+    const loaded = loadState();
+    if (!loaded) buildGrid();
+    renderAll();
+  }
+
+  resetBtn.addEventListener('click', () => {
+    if (confirm('Reset the puzzle? Your saved progress will be lost.')) {
+      reset();
+    }
+  });
   helpBtn.addEventListener('click', () => {
     instructions.style.display = instructions.style.display === 'none' ? 'block' : 'none';
   });
 
   window.addEventListener('resize', renderAll);
+  window.addEventListener('beforeunload', saveState);
 
-  reset();
+  init();
 })();
 </script>
 
