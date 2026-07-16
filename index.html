@@ -685,9 +685,19 @@
 
     const p = pieces.find(x => x.id === selectedId);
     if (!p) return;
-    const targetDr = Math.sign(row - p.r);
-    const targetDc = Math.sign(col - p.c);
+    // Compute direction relative to the piece's bounding box so that
+    // clicking directly above/below/left/right of any part of the piece
+    // resolves to a pure cardinal direction (important for wide/tall pieces).
+    let targetDr = 0;
+    if (row < p.r) targetDr = -1;
+    else if (row >= p.r + p.h) targetDr = 1;
+
+    let targetDc = 0;
+    if (col < p.c) targetDc = -1;
+    else if (col >= p.c + p.w) targetDc = 1;
+
     if (targetDr !== 0 && targetDc !== 0) return; // must be pure direction
+    if (targetDr === 0 && targetDc === 0) return; // click was on the piece itself
     tryMoveInDirection(selectedId, targetDr, targetDc);
   });
 
